@@ -293,6 +293,39 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Linux" OR ${CMAKE_SYSTEM_NAME} MATCHES "FreeBS
             FILES src/org.openkj.OpenKJ.metainfo.xml
             DESTINATION share/metainfo
     )
+
+    # ---------------------------------------------------------------------------
+    # Optional AppImage — produces a single self-contained executable.
+    # Enable with:  cmake -DBUILD_APPIMAGE=ON ...
+    # Requires linuxdeploy and linuxdeploy-plugin-qt on PATH or in the build dir.
+    # ---------------------------------------------------------------------------
+    option(BUILD_APPIMAGE "Build a self-contained AppImage (Linux only)" OFF)
+    if (BUILD_APPIMAGE)
+        find_program(LINUXDEPLOY linuxdeploy linuxdeploy-x86_64.AppImage
+            HINTS ${CMAKE_BINARY_DIR} ENV PATH)
+        find_program(LINUXDEPLOY_PLUGIN_QT linuxdeploy-plugin-qt linuxdeploy-plugin-qt-x86_64.AppImage
+            HINTS ${CMAKE_BINARY_DIR} ENV PATH)
+
+        if (LINUXDEPLOY AND LINUXDEPLOY_PLUGIN_QT)
+            # Build the AppDir from the cmake install tree, then package it.
+            add_custom_command(TARGET openkj POST_BUILD
+                COMMAND ${CMAKE_COMMAND} --install ${CMAKE_BINARY_DIR}
+                        --prefix ${CMAKE_BINARY_DIR}/AppDir/usr
+                COMMAND ${CMAKE_COMMAND} -E env
+                        QMAKE=${Qt6_DIR}/../../../bin/qmake
+                        OUTPUT=${CMAKE_BINARY_DIR}/OpenKJ-${sem_ver}-x86_64.AppImage
+                    "${LINUXDEPLOY}"
+                        --appdir ${CMAKE_BINARY_DIR}/AppDir
+                        --plugin qt
+                        --output appimage
+                COMMENT "Building AppImage..."
+            )
+            message(STATUS "AppImage build enabled: linuxdeploy found at ${LINUXDEPLOY}")
+        else()
+            message(WARNING "BUILD_APPIMAGE=ON but linuxdeploy or linuxdeploy-plugin-qt not found.\n"
+                "Download from https://github.com/linuxdeploy/linuxdeploy/releases and place in the build directory.")
+        endif()
+    endif()
 endif ()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
@@ -313,6 +346,10 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             MACOSX_BUNDLE_BUNDLE_NAME OpenKJ
             MACOSX_BUNDLE_BUNDLE_VERSION ${sem_ver}
             MACOSX_BUNDLE_ICON_FILE OpenKJ.icns
+            # Ensure rpath inside the bundle is set so the linker embeds it
+            MACOSX_RPATH TRUE
+            BUILD_WITH_INSTALL_RPATH TRUE
+            INSTALL_RPATH "@executable_path/../Frameworks"
             )
     target_link_libraries(openkj PRIVATE ${LIBRARIES})
     target_include_directories(openkj PRIVATE
@@ -320,34 +357,51 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
             ${taglib_SOURCE_DIR}/taglib/toolkit
             ${taglib_SOURCE_DIR}/taglib
     )
-    
+
     qt_import_plugins(openkj
         INCLUDE_BY_TYPE permissions
     )
-    
-    if (NOT DEFINED BUILDONLY)
-        get_target_property(_qt6_qmake_location Qt6::qmake IMPORTED_LOCATION)
-        execute_process(
-                COMMAND "${_qt6_qmake_location}" -query QT_INSTALL_PREFIX
-                RESULT_VARIABLE return_code
-                OUTPUT_VARIABLE qt6_install_prefix
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        if (qt6_install_prefix)
-            find_program(MACDEPLOYQT macdeployqt HINTS ${qt6_install_prefix} PATH_SUFFIXES bin)
-            if (MACDEPLOYQT)
-                add_custom_command(
-                        TARGET openkj
-                        COMMAND "${MACDEPLOYQT}"
-                        ARGS "${CMAKE_BINARY_DIR}/openkj.app"
-                )
-            else ()
-                message("Can't find macdeployqt")
-            endif ()
+
+    # -------------------------------------------------------------------------
+    # Step 1: Run macdeployqt to bundle Qt frameworks into the .app.
+    # This always runs (no BUILDONLY guard) so every build is self-contained.
+    # -------------------------------------------------------------------------
+    get_target_property(_qt6_qmake_location Qt6::qmake IMPORTED_LOCATION)
+    execute_process(
+            COMMAND "${_qt6_qmake_location}" -query QT_INSTALL_PREFIX
+            RESULT_VARIABLE _qt6_qmake_rc
+            OUTPUT_VARIABLE qt6_install_prefix
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if (qt6_install_prefix)
+        find_program(MACDEPLOYQT macdeployqt
+            HINTS "${qt6_install_prefix}"
+            PATH_SUFFIXES bin)
+        if (MACDEPLOYQT)
+            add_custom_command(TARGET openkj POST_BUILD
+                COMMAND "${MACDEPLOYQT}"
+                        "$<TARGET_BUNDLE_DIR:openkj>"
+                        -verbose=1
+                COMMENT "Running macdeployqt to bundle Qt frameworks..."
+            )
         else ()
-            message("QT_INSTALL_DIR not defined")
+            message(WARNING "macdeployqt not found — Qt frameworks will NOT be bundled.")
         endif ()
+    else ()
+        message(WARNING "QT_INSTALL_PREFIX not found — Qt frameworks will NOT be bundled.")
     endif ()
+
+    # -------------------------------------------------------------------------
+    # Step 2: Copy LibVLC dylibs and plugins into the .app and fix @rpaths.
+    # Uses cmake/macos_bundle_vlc.cmake as a standalone script.
+    # -------------------------------------------------------------------------
+    add_custom_command(TARGET openkj POST_BUILD
+        COMMAND ${CMAKE_COMMAND}
+                -DAPP_BUNDLE="$<TARGET_BUNDLE_DIR:openkj>"
+                -DVLC_SDK_PATH="${LIBVLC_SDK_PATH}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/macos_bundle_vlc.cmake"
+        COMMENT "Bundling LibVLC dylibs and plugins into .app..."
+    )
 endif ()
 
 if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
@@ -367,29 +421,67 @@ if (${CMAKE_SYSTEM_NAME} MATCHES "Windows")
             PROPERTY WIN32_EXECUTABLE true
     )
 
-    if (DEFINED DEPLOY_DEPS)
-        get_target_property(_qt6_qmake_location Qt6::qmake IMPORTED_LOCATION)
-        execute_process(
-                COMMAND "${_qt6_qmake_location}" -query QT_INSTALL_PREFIX
-                RESULT_VARIABLE return_code
-                OUTPUT_VARIABLE qt6_install_prefix
-                OUTPUT_STRIP_TRAILING_WHITESPACE
-        )
-        if (qt6_install_prefix)
-            find_program(WINDEPLOYQT windeployqt HINTS ${qt6_install_prefix} PATH_SUFFIXES bin)
-            if (WINDEPLOYQT)
-                add_custom_command(
-                        TARGET openkj
-                        COMMAND "${WINDEPLOYQT}"
-                        ARGS "${CMAKE_BINARY_DIR}\\openkj.exe"
-                )
-            else ()
-                message("Can't find windeployqt")
-            endif ()
+    # -------------------------------------------------------------------------
+    # Step 1: Run windeployqt to copy Qt DLLs and plugins next to the .exe.
+    # This always runs so every build (local and CI) is self-contained.
+    # -------------------------------------------------------------------------
+    get_target_property(_qt6_qmake_location Qt6::qmake IMPORTED_LOCATION)
+    execute_process(
+            COMMAND "${_qt6_qmake_location}" -query QT_INSTALL_PREFIX
+            RESULT_VARIABLE _qt6_qmake_rc
+            OUTPUT_VARIABLE qt6_install_prefix
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+    )
+    if (qt6_install_prefix)
+        find_program(WINDEPLOYQT windeployqt
+            HINTS "${qt6_install_prefix}"
+            PATH_SUFFIXES bin)
+        if (WINDEPLOYQT)
+            add_custom_command(TARGET openkj POST_BUILD
+                COMMAND "${WINDEPLOYQT}"
+                        --release
+                        --compiler-runtime
+                        --no-translations
+                        "$<TARGET_FILE:openkj>"
+                COMMENT "Running windeployqt to bundle Qt DLLs..."
+            )
         else ()
-            message("QT_INSTALL_DIR not defined")
+            message(WARNING "windeployqt not found — Qt DLLs will NOT be bundled.")
         endif ()
+    else ()
+        message(WARNING "QT_INSTALL_PREFIX not found — Qt DLLs will NOT be bundled.")
     endif ()
+
+    # -------------------------------------------------------------------------
+    # Step 2: Copy LibVLC DLLs and plugins directory next to the .exe.
+    # LIBVLC_SDK_PATH is set at the top of this file (defaults to C:/vlc-sdk
+    # in CI, or C:/Program Files/VideoLAN/VLC for local installs).
+    # -------------------------------------------------------------------------
+    if (EXISTS "${LIBVLC_SDK_PATH}")
+        # Copy the two core DLLs
+        foreach(VLC_DLL libvlc.dll libvlccore.dll)
+            add_custom_command(TARGET openkj POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${LIBVLC_SDK_PATH}/${VLC_DLL}"
+                        "$<TARGET_FILE_DIR:openkj>/${VLC_DLL}"
+                COMMENT "Copying ${VLC_DLL}..."
+            )
+        endforeach()
+        # Copy the plugins directory
+        if (EXISTS "${LIBVLC_SDK_PATH}/plugins")
+            add_custom_command(TARGET openkj POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_directory
+                        "${LIBVLC_SDK_PATH}/plugins"
+                        "$<TARGET_FILE_DIR:openkj>/plugins"
+                COMMENT "Copying VLC plugins..."
+            )
+        else()
+            message(WARNING "VLC plugins dir not found at ${LIBVLC_SDK_PATH}/plugins")
+        endif()
+    else()
+        message(WARNING "LIBVLC_SDK_PATH does not exist: ${LIBVLC_SDK_PATH}\n"
+            "Set -DLIBVLC_SDK_PATH=<path> to the VLC installation directory.")
+    endif()
 endif ()
 
 

@@ -178,32 +178,18 @@ jobs:
       shell: bash
       run: cmake --build .
 
-    - name: Create output dir and copy exe
-      run: |
-        mkdir output
-        copy build\openkj.exe output\
-
-    - name: Run windeployqt
-      run: |
-        windeployqt --release --compiler-runtime output/openkj.exe
-        dir output
-      shell: cmd
-
-    - name: Copy in LibVLC dependencies
-      run: |
-        cp -v C:/vlc-sdk/libvlc.dll output/
-        cp -v C:/vlc-sdk/libvlccore.dll output/
-        cp -Rv C:/vlc-sdk/plugins output/
-      shell: bash
+    # Qt DLLs, VLC DLLs, and VLC plugins are now bundled automatically
+    # by CMake POST_BUILD commands (windeployqt + copy_directory steps
+    # defined in CMakeLists.txt). No manual copy steps needed here.
 
     - name: Copy in other dependencies
       run: |
-        copy LICENSE output\LICENSE.txt
-        copy ${{ steps.download-roboto-bold.outputs.file-path }} output\
-        copy ${{ steps.download-roboto-medium.outputs.file-path }} output\
-        copy ${{ steps.download-roboto-regular.outputs.file-path }} output\
-        copy ${{ steps.download-source-code-pro-medium.outputs.file-path }} output\
-        7z e -bb3 -y ${{ steps.download-openssl.outputs.file-path }} -o"output\"
+        copy LICENSE build\LICENSE.txt
+        copy ${{ steps.download-roboto-bold.outputs.file-path }} build\
+        copy ${{ steps.download-roboto-medium.outputs.file-path }} build\
+        copy ${{ steps.download-roboto-regular.outputs.file-path }} build\
+        copy ${{ steps.download-source-code-pro-medium.outputs.file-path }} build\
+        7z e -bb3 -y ${{ steps.download-openssl.outputs.file-path }} -o"build\"
 
     # - name: Sign OpenKJ executable
     #   run: |

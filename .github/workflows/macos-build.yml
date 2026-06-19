@@ -83,7 +83,7 @@ jobs:
         PKG_CONFIG_PATH: "${{ env.QT_PREFIX }}/lib/pkgconfig"
         QT_DIR: "${{ env.QT_PREFIX }}/"
       run: |
-        cmake -DSPDLOG_USE_BUNDLED=true -DCMAKE_BUILD_TYPE=Release -DBUILDONLY=True . -B build -G Ninja
+        cmake -DSPDLOG_USE_BUNDLED=true -DCMAKE_BUILD_TYPE=Release . -B build -G Ninja
         ninja -C build
 
     - name: Upload app
